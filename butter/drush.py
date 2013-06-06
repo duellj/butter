@@ -15,8 +15,14 @@ def cc():
 
 @task
 def updatedb():
-    print('+ Running drush updatedb')
-    _drush('updatedb')
+    if 'sites' in env:
+        for site in env.sites:
+            with cd('%s/current/sites/%s' % (env.host_site_path, site)):
+                print('+ Running drush updatedb for %s' % site)
+                run('drush updatedb')
+    else:
+        print('+ Running drush updatedb')
+        _drush('updatedb')
 
 @task
 def cron():
