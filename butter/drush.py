@@ -4,8 +4,14 @@ from fabric.operations import run
 
 @task
 def cc():
-    print('+ Running drush cc')
-    _drush('cc all')
+    if 'sites' in env:
+        for site in env.sites:
+            with cd('%s/current/sites/%s' % (env.host_site_path, site)):
+                print('+ Running drush cc for %s' % site)
+                run('drush cc all')
+    else:
+        print('+ Running drush cc')
+        _drush('cc all')
 
 @task
 def updatedb():
