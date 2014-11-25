@@ -2,7 +2,7 @@
 see http://guide.python-distribute.org/creation.html
 """
 
-from distutils.core import setup
+from setuptools import setup
 
 setup(
     name='Butter',
@@ -13,9 +13,10 @@ setup(
     url='https://github.com/ombu/butter',
     license='LICENSE.txt',
     description='Fabric library for developing and deploying Drupal sites.',
-    long_description=open('README.rst').read(),
+    long_description=open('README').read(),
     install_requires=[
         "Fabric >= l.3.4",
-        "awscli >= 1.1.0"
+        "awscli >= 1.1.0",
+        "boto >= 2.34.0",
     ],
 )
