@@ -1,14 +1,13 @@
 from __future__ import with_statement
-from fabric.api import task, env, cd, hide, execute, settings
-from fabric.operations import run, prompt, put
+from fabric.api import task, env, cd, hide, settings
+from fabric.operations import run, put, abort
 from fabric.contrib import files
 from fabric.contrib import console
-from urlparse import urlparse
 from butter import deploy, sync as butter_sync
 from butter.host import pre_clean
 from butter.deprecated import legacy_settings
-from .drush import solrindex
 import StringIO
+
 
 @task
 def push(ref):
@@ -20,6 +19,9 @@ def push(ref):
         from butter import git as repo
     elif env.repo_type == 'hg':
         from butter import hg as repo
+    else:
+        abort('Setup a valid env.repo_type in fabfile.py')
+    # noinspection PyUnboundLocalVariable
     parsed_ref = repo.check_commit(ref)
     deploy.clean()
     build_path = '%s/changesets/%s' % (env.host_site_path, parsed_ref)
@@ -30,6 +32,7 @@ def push(ref):
     set_perms(build_path)
     link_files(build_path)
     deploy.mark(parsed_ref)
+
 
 @task
 def setup_env():
@@ -70,31 +73,34 @@ def settings_php(build_path):
     print('+ Configuring site settings.php')
     legacy_settings()
     with cd('%s/public/sites/default' % build_path):
-        file = "settings.%s.php" % env.host_type
-        if files.exists(file):
+        settings_file = "settings.%s.php" % env.host_type
+        if files.exists(settings_file):
             for key in env.settings:
-                files.sed(file, '%%' + key.upper() + '%%', env.settings[key])
+                files.sed(settings_file, '%%' + key.upper() + '%%',
+                          env.settings[key])
 
             if files.exists('settings.php'):
                 run('rm settings.php')
-            run('cp settings.%s.php settings.php' % env.host_type )
+            run('cp settings.%s.php settings.php' % env.host_type)
             run('rm settings.*.php settings.*.bak')
         else:
             run('ls -lah')
-            abort('Could not find %s' % file)
+            abort('Could not find %s' % settings_file)
+
 
 def restrict_robots(build_path):
     """
     Restrict QA/Staging robots.txt
     """
-    if env.host_type in { 'qa', 'staging' }:
+    if env.host_type in {'qa', 'staging'}:
         print('+ Restricting robots')
-        file = '%s/public/robots.txt' % build_path
-        robotstxt = StringIO.StringIO();
+        robots_file = '%s/public/robots.txt' % build_path
+        robotstxt = StringIO.StringIO()
         robotstxt.name = 'robots.txt'
         robotstxt.write('User-agent: *\n')
         robotstxt.write('Disallow: /')
-        put(robotstxt, file);
+        put(robotstxt, robots_file)
+
 
 def set_perms(build_path):
     print('+ Setting Drupal permissions')
@@ -104,6 +110,7 @@ def set_perms(build_path):
             build_path))
         run('chmod -R 2770 %s' % build_path)
         run('chmod 0440 %s/public/sites/default/settings*' % build_path)
+
 
 def link_files(build_path):
     print('+ Creating symlinks')
@@ -115,34 +122,36 @@ def link_files(build_path):
         run('if [ -h current ] ; then unlink current ; fi')
         run('ln -s %s/public current' % build_path)
 
+
 @task
-def sync_files(dst, opts_string=''):
+def sync_files(dst, awscli_options=''):
     """
     Syncs Drupal files from the environment's S3 bucket to `dst`.
     """
     ensure_files_path()
     exclude = ['*styles/*', '*xmlsitemap/*', '*js/*', '*css/*', '*ctools/*']
-    opts_string += ' ' + ' '.join(["--exclude '%s'" % v for v in exclude])
-    butter_sync.files(dst, opts_string)
+    awscli_options += ' ' + ' '.join(["--exclude '%s'" % v for v in exclude])
+    sync.files(dst, awscli_options)
+
 
 @task
-def sync_db(dst, opts_string=''):
+def sync_db(dst):
     """
     Copies a Drupal database from environment to `dst` environment.
     """
-    butter_sync.db(dst, opts_string)
+    butter_sync.db(dst)
+
 
 @task
 def sync(dst):
     """
     Moves drupal sites between servers
     """
-    global env
+    sync_db(dst)
+    sync_files(dst)
     src = butter_sync.get_source_environment()
-
-    sync_db(dst);
-    sync_files(dst);
     print('+ Site synced from %s to %s' % (src, dst))
+
 
 @task
 def rebuild():
@@ -153,6 +162,7 @@ def rebuild():
     print('Rebuilding the site profile')
     with cd(env.host_site_path + '/current'):
         run("""sh ../private/reset.sh -d""", shell=True)
+
 
 @task
 def build(dev='yes'):
@@ -177,21 +187,28 @@ def build(dev='yes'):
         cd_function = cd
 
     with cd_function(env.host_site_path + '/' + env.public_path):
-         run_function("drush si --yes %s --site-name='%s' --site-mail='%s' --account-name='%s' --account-pass='%s' --account-mail='%s'" %
-                 (env.site_profile, env.site_name, 'noreply@ombuweb.com', 'system', 'pass', 'noreply@ombuweb.com'))
-         if dev == 'yes':
-             run_function("drush en -y --skip %s" % env.dev_modules)
-             run_function("drush cc all")
+        run_function(
+            "drush si --yes %s --site-name='%s' --site-mail='%s' "
+            "--account-name='%s' --account-pass='%s' --account-mail='%s'" %
+            (env.site_profile, env.site_name, 'noreply@ombuweb.com', 'system',
+             'pass', 'noreply@ombuweb.com')
+        )
+        if dev == 'yes':
+            run_function("drush en -y --skip %s" % env.dev_modules)
+            run_function("drush cc all")
 
-         run_function("chmod 2770 sites/default")
+        run_function("chmod 2770 sites/default")
 
-         # Rebuild solr, since apachesolr.module will reindex all newly created
-         # nodes, possibly creating duplicate content in the solr index.
-         # @todo: remove direct calls to drush and replace with execute() once
-         # global local vs. remote context has been figured out.
-         # execute(solrindex);
-         with settings(hide('warnings'), warn_only=True):
-             run_function('drush solr-delete-index && drush solr-mark-all && drush solr-index')
+        # Rebuild solr, since apachesolr.module will reindex all newly created
+        # nodes, possibly creating duplicate content in the solr index.
+        # @todo: remove direct calls to drush and replace with execute() once
+        # global local vs. remote context has been figured out.
+        # execute(solrindex);
+        with settings(hide('warnings'), warn_only=True):
+            run_function(
+                'drush solr-delete-index && drush solr-mark-all '
+                '&& drush solr-index')
+
 
 @task
 def enforce_perms():
@@ -199,7 +216,8 @@ def enforce_perms():
     print('+ Setting file permissions with sudo')
     with cd(env.host_site_path):
         sudo('chown -R %s:%s files && chmod -R 2770 files' % (env.user,
-            env.host_webserver_user))
+             env.host_webserver_user))
+
 
 def ensure_files_path():
     if not 'files_path' in env:

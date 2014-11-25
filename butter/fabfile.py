@@ -3,15 +3,19 @@ import host,  git, deploy, drush, drupal
 
 env.repo_type = 'git'
 env.repo_url = ''
-env.use_ssh_config = 'true'
+env.use_ssh_config = True
 
 # Global environment settings
 env.site_name = 'New Site'
 env.public_path = 'public'
 env.site_profile = 'profile'
 
+# The bucket where database and file dumps are stored during sync. See
+# `sync.py`.
 env.s3_bucket = 'files.s3domain.com'
-env.s3_namespace = 'site_namespace'
+
+# The identifier for this site
+env.site_id = 'site_namespace'
 
 # Host settings
 @task

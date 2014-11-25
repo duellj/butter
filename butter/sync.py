@@ -5,8 +5,9 @@ from boto.s3.connection import S3Connection
 from datetime import datetime, timedelta
 from time import time
 
+
 @task
-def files(dst='local', opts_string=''):
+def files(dst='local', awscli_options=''):
     """
     Syncs files from the environment's S3 bucket to `dst` env.files_path.
     """
@@ -15,25 +16,23 @@ def files(dst='local', opts_string=''):
     if not 's3_bucket' in env:
         abort('Please configure an env.s3_bucket for this project.')
 
-    # TODO: Move region into individual push/pull f, reading from
-    # global settings.
-    opts_string += ' --region=us-west-2'
-
-    push_files_to_s3(opts_string)
+    push_files_to_s3(awscli_options)
     execute(dst)
-    pull_files_from_s3(opts_string)
+    pull_files_from_s3(awscli_options)
     execute(get_source_environment())
 
-def push_files_to_s3(opts_string=''):
+
+def push_files_to_s3(awscli_options=''):
     """
     Sync files from current environment to S3
     """
     s3_directory = 's3://' + env.s3_bucket + '/' + _get_s3_bucket('files')
     src_files = env.host_site_path + '/' + env.files_path
     run('aws s3 sync %s %s %s'
-        % (opts_string, src_files, s3_directory))
+        % (awscli_options, src_files, s3_directory))
 
-def pull_files_from_s3(opts_string=''):
+
+def pull_files_from_s3(awscli_options=''):
     """
     Sync files from S3 to dst
     """
@@ -48,17 +47,18 @@ def pull_files_from_s3(opts_string=''):
         import os
         dst_files = os.path.dirname(env.real_fabfile) + '/' + env.files_path
         local('aws s3 sync %s %s %s'
-              % (s3_directory, dst_files, opts_string))
+              % (s3_directory, dst_files, awscli_options))
     else:
         with settings(host_string=env.hosts[0]):
             dst_files = '%s/%s' % (env.host_site_path, env.files_path)
             run('aws s3 sync %s %s %s'
-                % (s3_directory, dst_files, opts_string))
+                % (s3_directory, dst_files, awscli_options))
 
     print '+ Files synced to %s' % env.files_path
 
+
 @task
-def db(dst='local', opts_string=''):
+def db(dst='local'):
     """
     Copies a database from environment's S3 bucket to `dst` environment.
     """
@@ -78,7 +78,7 @@ def db(dst='local', opts_string=''):
         abort('Please configure an env.s3_bucket for this project.')
 
     try:
-        dump_path = find_s3_db_dump(prompt_db=True)
+        dump_path = find_s3_db_dump(confirm=True)
     except DumpNotFound:
         dump_path = push_db_to_s3()
 
@@ -90,11 +90,14 @@ def db(dst='local', opts_string=''):
 
     print '+ Database synced from %s to %s' % (src, dst)
 
-def find_s3_db_dump(day_granularity=5, prompt_db=False):
-    """
-    Attempts to find a valid dump in S3 within the day granularity
 
-    If configured, will prompt user to accept dump as valid
+def find_s3_db_dump(day_granularity=5, confirm=False):
+    """
+    Attempts to find an existing dump in S3 within the day granularity.
+
+    Keyword arguments:
+    day_granularity: How recent should a dump be to be considered fresh.
+    confirm: Ask the user to confirm the use of an existing dump.
     """
 
     # @todo: warn user if can't connection
@@ -110,12 +113,13 @@ def find_s3_db_dump(day_granularity=5, prompt_db=False):
     valid_dump = False
     if list(keys):
         for key in _filter_s3_files(keys):
-            if datetime.strptime(key.last_modified[:19], date_format) >= date_limit:
-                if prompt_db:
+            if datetime.strptime(key.last_modified[:19], date_format) \
+                    >= date_limit:
+                if confirm:
                     accept_dump = prompt(
                         'A database dump has been found from %s. Do you want '
                         'to import this dump ("n" will generate a new dump)?'
-                        % (key.last_modified), default='y', validate='y|n'
+                        % key.last_modified, default='y', validate='y|n'
                     )
                 else:
                     accept_dump = 'y'
@@ -129,16 +133,15 @@ def find_s3_db_dump(day_granularity=5, prompt_db=False):
 
     return valid_dump
 
+
 class DumpNotFound(Exception):
     pass
+
 
 def push_db_to_s3():
     """
     Creates a new DB dump from environment and pushes to S3
     """
-
-    # TODO: Get global setting
-    opts_string = ' --region=us-west-2'
 
     src = get_source_environment()
 
@@ -148,18 +151,18 @@ def push_db_to_s3():
     valid_dump = 's3://%s/%s%s.sql.gz' % (
         env.s3_bucket, _get_s3_bucket(), datetime.today().strftime('%Y%m%d')
     )
-    tmp_file = '/tmp/%s-%s.%d.sql.gz' % (env.s3_namespace, src, int(time()))
+    tmp_file = '/tmp/%s-%s.%d.sql.gz' % (env.site_id, src, int(time()))
     run(
         '%(dump_sql)s | gzip -c > %(tmp)s &&'
-        'aws s3 cp %(opts)s %(tmp)s %(dump)s && rm %(tmp)s' % {
+        'aws s3 cp %(tmp)s %(dump)s && rm %(tmp)s' % {
             'dump_sql': dump_sql,
             'tmp': tmp_file,
-            'opts': opts_string,
             'dump': valid_dump
         }
     )
 
     return valid_dump
+
 
 def pull_db_from_s3(dump):
     """
@@ -179,21 +182,24 @@ def pull_db_from_s3(dump):
     drop_tables_sql = """mysql -h %(db_host)s -u%(db_user)s -p%(db_pw)s \
         -BNe "show tables" %(db_db)s \
         | tr '\n' ',' | sed -e 's/,$//' \
-        | awk '{print "SET FOREIGN_KEY_CHECKS = 0;DROP TABLE IF EXISTS " $1 ";SET FOREIGN_KEY_CHECKS = 1;"}' \
+        | awk '{print "SET FOREIGN_KEY_CHECKS = 0;\
+        DROP TABLE IF EXISTS " $1 ";SET FOREIGN_KEY_CHECKS = 1;"}' \
         | mysql -h %(db_host)s -u%(db_user)s -p%(db_pw)s %(db_db)s"""
 
-    run_function(drop_tables_sql % {
-        "db_host": env.db_host,
-        "db_user": env.db_user,
-        "db_pw": env.db_pw,
-        "db_db": env.db_db
-        })
+    run_function(
+        drop_tables_sql % {
+            "db_host": env.db_host,
+            "db_user": env.db_user,
+            "db_pw": env.db_pw,
+            "db_db": env.db_db
+        }
+    )
 
     import_sql = 'mysql -h %s -u%s -p%s -D%s' % (
         env.db_host, env.db_user, env.db_pw, env.db_db
     )
     tmp_file = '/tmp/%s-%s.%d.sql.gz' % (
-        env.s3_namespace, env.host_type, int(time())
+        env.site_id, env.host_type, int(time())
     )
     run_function('aws s3 cp %(opts)s %(dump)s %(tmp)s && gunzip -c %(tmp)s |'
                  '%(import_sql)s && rm %(tmp)s' % {
@@ -203,19 +209,22 @@ def pull_db_from_s3(dump):
                      'import_sql': import_sql
                  })
 
+
 def _get_s3_bucket(bucket_type='db'):
     """
     Returns namespaced bucket path for environment
     """
 
     src = get_source_environment()
-    return env.s3_namespace + '.' + src + '/' + bucket_type + '/'
+    return env.site_id + '.' + src + '/' + bucket_type + '/'
+
 
 def _filter_s3_files(keys):
     """
     Filters out directories from a list of S3 keys
     """
     return (key for key in keys if not key.name.endswith('/'))
+
 
 def get_source_environment():
     """
