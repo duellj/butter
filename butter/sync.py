@@ -16,6 +16,10 @@ def files(dst='local', awscli_options=''):
     if not 's3_bucket' in env:
         abort('Please configure an env.s3_bucket for this project.')
 
+    # TODO: Move region into individual push/pull f, reading from
+    # global settings.
+    awscli_options += ' --region=us-west-2'
+
     push_files_to_s3(awscli_options)
     execute(dst)
     pull_files_from_s3(awscli_options)
@@ -143,6 +147,9 @@ def push_db_to_s3():
     Creates a new DB dump from environment and pushes to S3
     """
 
+    # TODO: Get global setting
+    awscli_options = ' --region=us-west-2'
+
     src = get_source_environment()
 
     dump_sql = 'mysqldump -h %s -u%s -p%s %s' % (
@@ -154,9 +161,10 @@ def push_db_to_s3():
     tmp_file = '/tmp/%s-%s.%d.sql.gz' % (env.site_id, src, int(time()))
     run(
         '%(dump_sql)s | gzip -c > %(tmp)s &&'
-        'aws s3 cp %(tmp)s %(dump)s && rm %(tmp)s' % {
+        'aws s3 cp %(awscli_options)s %(tmp)s %(dump)s && rm %(tmp)s' % {
             'dump_sql': dump_sql,
             'tmp': tmp_file,
+            'awscli_options': awscli_options,
             'dump': valid_dump
         }
     )
@@ -170,7 +178,7 @@ def pull_db_from_s3(dump):
     """
 
     # TODO: Get global setting
-    opts_string = ' --region=us-west-2'
+    awscli_options = ' --region=us-west-2'
 
     # If there's no host defined, assume localhost and run tasks locally.
     if env.host_type == 'local':
@@ -201,9 +209,9 @@ def pull_db_from_s3(dump):
     tmp_file = '/tmp/%s-%s.%d.sql.gz' % (
         env.site_id, env.host_type, int(time())
     )
-    run_function('aws s3 cp %(opts)s %(dump)s %(tmp)s && gunzip -c %(tmp)s |'
+    run_function('aws s3 cp %(awscli_options)s %(dump)s %(tmp)s && gunzip -c %(tmp)s |'
                  '%(import_sql)s && rm %(tmp)s' % {
-                     'opts': opts_string,
+                     'awscli_options': awscli_options,
                      'dump': dump,
                      'tmp': tmp_file,
                      'import_sql': import_sql
